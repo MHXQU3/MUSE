@@ -1,0 +1,7 @@
+test_data/
+__pycache__/
+*.pyc
+.env
+# Your real Spotify export: never commit it
+my_spotify_data*
+Spotify Extended Streaming History/
