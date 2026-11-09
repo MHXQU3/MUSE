@@ -114,3 +114,31 @@ join public.artists a on a.id = t.primary_artist_id
 where e.user_id = :'uid'
 group by 1 having count(*) >= 100
 order by skip_pct desc limit 5;
+
+\echo '\n== 9. Genre distribution per year (needs MusicBrainz enrichment)'
+-- An artist's listening is split across their genres in proportion to how
+-- strongly MusicBrainz users tagged each one.
+with artist_genre_share as (
+  select ag.artist_id, g.name as genre, ag.weight / sum(ag.weight) over (partition by ag.artist_id) as w
+  from public.artist_genres ag join public.genres g on g.id = ag.genre_id
+), per_year as (
+  select extract(year from p.started_local)::int as year, ags.genre, sum(p.ms_played * ags.w)::numeric as ms
+  from public.plays p join artist_genre_share ags on ags.artist_id = p.artist_id
+  where p.user_id = :'uid'
+  group by 1, 2
+)
+select year, genre, share_pct
+from (select year, genre, round(100.0 * ms / sum(ms) over (partition by year), 1) as share_pct,
+             rank() over (partition by year order by ms desc) as r
+      from per_year) x
+where r <= 4  -- top 4 genres; shares are of all listening that year
+order by year, share_pct desc;
+
+\echo '\n== 10. Language distribution per year (from album lyrics language)'
+select year, coalesce(language, '??') as language,
+       round(100.0 * sum(ms_played) / sum(sum(ms_played)) over (partition by year), 1) as share_pct
+from (select extract(year from p.started_local)::int as year, t.language, p.ms_played
+      from public.plays p join public.tracks t on t.id = p.track_id
+      where p.user_id = :'uid') x
+group by year, language
+order by year, share_pct desc;

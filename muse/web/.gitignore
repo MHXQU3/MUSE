@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.env*.local
+.env
+next-env.d.ts
+demo/dist/
+demo/data.json
+*.tsbuildinfo
+.vercel
+tests/.out/

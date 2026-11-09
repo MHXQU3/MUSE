@@ -1,21 +1,27 @@
-# MUSE: data foundation
+# MUSE
 
-The database and importer for MUSE. This is everything the app needs before
-any screens exist: your Spotify history goes in clean, and the first insight
-queries come back out of it.
+Your music. Your world. A personal music archive built from your Spotify
+history: an importer, a MusicBrainz enricher, a Postgres/Supabase database,
+and a website (`web/`, see `web/README.md` to put it online).
 
 ```
 supabase/migrations/   Database schema. Run on Supabase, in order.
   0001_core_schema.sql      tables, row level security, profile-on-signup
   0002_import_functions.sql process_import_batch(), rollback_import_batch()
   0003_analytics_views.sql  plays, monthly_artist_stats
+  0004_musicbrainz_enrichment.sql  lookup queue, match decisions, review, merges
+  0005_timeline_functions.sql      what the website's Timeline page reads
+web/                   Next.js website (Timeline page, sign-in)
 importer/muse_import/  Python importer (standard library only)
   parse.py                  reads the export, cleans and filters rows
   load.py                   sends rows to Postgres (psycopg or psql)
-  cli.py                    check / import / batches / rollback
+  musicbrainz.py            rate-limited, cached MusicBrainz client
+  matching.py               decides which MusicBrainz entry something is
+  enrich.py                 runs the lookups, resumably
+  cli.py                    all commands
 queries/insights.sql   Prototype queries for the first screens
 scripts/generate_test_export.py   Fake Spotify export for testing
-tests/                 13 tests (parser + database)
+tests/                 40 tests (parser, matching, client, database)
 dev/                   LOCAL TESTING ONLY: Supabase stand-in, DB reset
 ```
 
@@ -55,7 +61,7 @@ dev/                   LOCAL TESTING ONLY: Supabase stand-in, DB reset
 ## Set up on Supabase
 
 1. Create a project at supabase.com.
-2. In the **SQL Editor**, run the three files in `supabase/migrations/` in
+2. In the **SQL Editor**, run the files in `supabase/migrations/` in
    order. Do not run anything from `dev/`.
 3. In **Authentication > Users**, add yourself as a user. A profile is
    created for you automatically.
@@ -79,6 +85,65 @@ To see insights, run `queries/insights.sql` in a SQL client with
 `-v email=you@example.com` (it uses psql variables), or copy individual
 queries into the Supabase SQL Editor with your user id pasted in.
 
+## Enrich with MusicBrainz
+
+After importing, fill in countries, genres, languages, release dates, ISRCs
+and cover art links:
+
+```bash
+export MUSE_CONTACT="you@example.com"   # MusicBrainz requires contact details
+python -m muse_import enrich --minutes 60      # stop any time; re-run to continue
+python -m muse_import coverage                 # how much of your listening is covered
+python -m muse_import review                   # check suggestions
+python -m muse_import confirm 21 34            # ...accept some
+python -m muse_import reject 40                # ...and reject others
+python -m muse_import set-mbid artist "Name" https://musicbrainz.org/artist/<id>
+```
+
+**How long it takes.** MusicBrainz allows about one request per second.
+Roughly: 3 requests per artist, 1 per album, 1 per track. A history with
+2,000 artists, 4,000 albums and 12,000 tracks is around 6 hours in total.
+Things are looked up most-listened first, so the first hour already covers
+most of your listening. Use `--only artist` to do the artist pass first
+(countries and genres), and `--min-plays 3` to skip the long tail. Every
+response is cached in `~/.muse/musicbrainz_cache.sqlite`, so stopping and
+re-running costs nothing.
+
+**How matching works.**
+- *Artists* are matched through their songs, not their name: MUSE searches
+  for your two most-played songs by the artist and lets the results vote.
+  That's how it tells two artists called "Kalis" apart. A name-only match
+  is never applied automatically; it waits in `review`.
+- *Albums* and *tracks* are only searched within an already-matched artist.
+  Tracks must agree on title, length (within a few seconds) and version: a
+  remix is never matched to the original, a remaster is (MusicBrainz treats
+  them as the same recording), and a 7-minute live version loses to the
+  studio one.
+- Each decision is `auto` (applied), `suggested` (waits for you) or
+  `unmatched`, and every one is stored in `metadata_matches` with the
+  runner-up candidates.
+- Two MUSE artists that turn out to be the same MusicBrainz artist (e.g.
+  "Lil' Vesper" and "Lil Vesper") are **merged**: plays, albums, credits,
+  ratings and collections all move over.
+- Your decisions are **locked**: `confirm`, `reject` and `set-mbid` are never
+  overwritten by later automatic runs.
+- *Language* comes from the lyrics language MusicBrainz records on releases,
+  applied to that album's tracks. *Genres* are MusicBrainz's community genre
+  tags, weighted by how many people applied them.
+
+**Known gaps.**
+- Coverage depends on MusicBrainz. Big artists are well covered; smaller
+  French rap, Spanish urban and North African artists may be missing, or
+  have no genres or languages. Expect some `set-mbid` for favourites.
+- Names in another script (e.g. Arabic) only match if MusicBrainz has that
+  spelling as a name or alias; otherwise use `set-mbid`.
+- Artists who only ever appear as a *featured* artist aren't looked up yet.
+- Cover links point at the Cover Art Archive, which has no image for some
+  releases; the app should fall back to a placeholder.
+- This was tested against a simulated MusicBrainz (`tests/fake_musicbrainz.py`)
+  built to mimic its JSON, not the live service. The first real run is the
+  real test: start with `--limit 20` and look at the results.
+
 ## Try it now with fake data
 
 ```bash
@@ -98,7 +163,7 @@ writes `expected.json`, the counts a correct import must produce.
 python -m unittest discover -s tests -v
 ```
 
-The 11 parser tests need nothing. The 2 database tests run when
+The parser, matching and client tests need nothing. The database tests run when
 `MUSE_TEST_DATABASE_URL` points at a **local** Postgres built with
 `dev/reset_local_db.sh` (never Supabase: they create and delete users).
 The SQL for local testing loads `dev/supabase_stub.sql` first, which fakes
@@ -106,8 +171,5 @@ the parts of Supabase the migrations rely on.
 
 ## Not built yet
 
-- Metadata enrichment (MusicBrainz: countries, genres, release dates, ISRCs;
-  Cover Art Archive: artwork). The `metadata_matches` table is ready for it.
-- Genres and languages: tables and columns exist, nothing fills them yet.
 - Journal (Phase 2 in the blueprint).
-- The Next.js app.
+- Website pages beyond Timeline: Overview, Collection, Identity (Soundprint).

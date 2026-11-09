@@ -52,7 +52,21 @@ def staging_csv(batch_id: str, events: list[Event]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+# SQL functions the importer may call with a single jsonb argument.
+CALLABLE_FUNCTIONS = {
+    "musicbrainz_queue", "apply_musicbrainz_results", "musicbrainz_review",
+    "resolve_musicbrainz_match", "set_manual_musicbrainz_id", "find_entity",
+    "requeue_musicbrainz", "enrichment_coverage",
+}
+
+
+def _check_fn(fn: str) -> None:
+    if fn not in CALLABLE_FUNCTIONS:
+        raise ValueError(f"not an importer function: {fn}")
+
+
 class Database(Protocol):
+    def call(self, fn: str, arg: dict): ...
     def user_id_for_email(self, email: str) -> str | None: ...
     def import_batch(self, batch_id: str, user_id: str, files: list[str],
                      parse_stats: dict, csv_bytes: bytes) -> dict: ...
@@ -82,6 +96,12 @@ class PsycopgDB:
 
     def _connect(self):
         return self._psycopg.connect(self.dsn)
+
+    def call(self, fn: str, arg: dict):
+        _check_fn(fn)
+        with self._connect() as conn:
+            row = conn.execute(f"select public.{fn}(%s::jsonb)::text", (json.dumps(arg),)).fetchone()
+            return json.loads(row[0]) if row and row[0] is not None else None
 
     def user_id_for_email(self, email: str) -> str | None:
         with self._connect() as conn:
@@ -143,6 +163,17 @@ class PsqlDB:
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "psql failed")
         return proc.stdout.strip()
+
+    def call(self, fn: str, arg: dict):
+        _check_fn(fn)
+        # The argument goes in a dollar-quoted literal with a random tag, so
+        # its size isn't limited by the command line and it needs no escaping.
+        payload = json.dumps(arg)
+        tag = "muse_" + uuid.uuid4().hex
+        while tag in payload:
+            tag = "muse_" + uuid.uuid4().hex
+        out = self._run(f"select public.{fn}(${tag}${payload}${tag}$::jsonb)::text;")
+        return json.loads(out) if out else None
 
     def user_id_for_email(self, email: str) -> str | None:
         out = self._run("select id from auth.users where lower(email) = lower(:'email');",
