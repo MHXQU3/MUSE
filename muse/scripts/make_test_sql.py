@@ -37,9 +37,11 @@ def arr(items) -> str:
 
 def main() -> None:
     tracks = build_catalogue(random.Random(7))
+    # Compact rows: the database derives the URI, version and featured artists.
+    scene_code = {"us_hiphop": 1, "fr_rap": 2, "es_urban": 3, "north_africa": 4, "other": 5}
     rows = ",\n    ".join(
-        f"({q(t['uri'])},{q(t['title'])},{q(t['artist'])},{q(t['album'])},{q(t['scene'])},"
-        f"{t['duration_ms']},{t['popularity']:.3f},{q(detect_version(t['title']))},{arr(featured_artists(t['title']))})"
+        f"({q(t['title'])},{q(t['artist'])},{q(t['album'])},{scene_code[t['scene']]},"
+        f"{t['duration_ms'] // 1000},{t['popularity']:.2f})"
         for t in tracks)
     countries = ",\n    ".join(f"({q(a)},{q(c)},{q(LANG[s])})" for a, c, s in ARTISTS)
 
@@ -57,10 +59,20 @@ begin
   end if;
   perform setseed(0.42);
 
-  create temp table cat (uri text, title text, artist text, album text, scene text,
-                         dur int, pop real, version_type text, feat text[]) on commit drop;
-  insert into cat values
+  create temp table cat_raw (title text, artist text, album text, scene_no int, dur_s int, pop real)
+    on commit drop;
+  insert into cat_raw values
     {rows};
+
+  create temp table cat on commit drop as
+    select 'spotify:track:TEST' || lpad(n::text, 18, '0') as uri, title, artist, album,
+           (array['us_hiphop','fr_rap','es_urban','north_africa','other'])[scene_no] as scene,
+           dur_s * 1000 + 500 as dur, pop,
+           case when title ~* 'sped[ -]?up' then 'sped_up' when title ~* 'remix' then 'remix'
+                when title ~* 'remaster' then 'remaster' else 'original' end as version_type,
+           coalesce(regexp_split_to_array((regexp_match(title, '\\(feat\\. ([^)]+)\\)'))[1], '\\s*(,|&)\\s*'),
+                    '{{}}') as feat
+    from (select *, row_number() over () as n from cat_raw) r;
 
   -- Cumulative weights per scene, for weighted random picks.
   create temp table cat_cum on commit drop as
