@@ -71,6 +71,20 @@ check `git status` before your first commit anyway.
    `.env.local`.
 4. Deploy. You get an address like `https://muse-yourname.vercel.app`.
 
+### 4b. Code sign-in settings (Vercel, server only)
+
+Add these too. They have no `NEXT_PUBLIC_` prefix, so they never reach the browser:
+
+- `SUPABASE_SECRET_KEY`: Supabase > Project Settings > API Keys > Secret keys.
+  Lets the server count wrong codes (5 wrong codes lock an email for 15 minutes).
+- `MUSE_TEST_LOGIN_EMAIL` and `MUSE_TEST_LOGIN_CODE` (optional): a fixed code
+  for one account, for testing without waiting for emails. Keep them out of the
+  repository. Remove them when you no longer need them.
+
+Anyone else signs in with **Email me a code**. To have the email show the code
+as well as the link, add `{{ .Token }}` to the *Magic Link* template in
+Supabase > Authentication > Emails.
+
 ### 5. Tell Supabase about the address
 
 **Authentication > URL Configuration**:
