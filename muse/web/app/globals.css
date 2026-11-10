@@ -283,3 +283,4 @@ code { font-size: 0.9em; background: var(--plum-raised); padding: 0.1em 0.35em; 
 .login-form input:focus-visible { outline: 2px solid var(--paper); outline-offset: 1px; }
 .login-sent { font: 400 1.25rem/1.4 var(--font-display); }
 .form-error { color: #e8a7a0; font-size: 0.9rem; }
+.login-alt { justify-self: start; margin-top: 0.4rem; font-size: 0.875rem; text-decoration: underline; text-underline-offset: 0.2em; }
